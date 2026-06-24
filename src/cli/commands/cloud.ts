@@ -1,5 +1,6 @@
 import type { Command } from "commander";
-import { printError, printSuccess, printInfo } from "../ui.js";
+import { printError, printSuccess, printInfo, printHint } from "../ui.js";
+import { DEFAULT_LIST_LIMIT, limitItems, parsePositiveIntegerOption, truncateText } from "../../lib/compact-output.js";
 
 export function registerCloudCommands(program: Command): void {
   const cloudCmd = program.command("cloud").description("Cloud sync commands");
@@ -7,8 +8,10 @@ export function registerCloudCommands(program: Command): void {
   cloudCmd
     .command("status")
     .description("Show cloud config and connection health")
+    .option("--limit <n>", `Maximum sync-health rows to show (default: ${DEFAULT_LIST_LIMIT})`)
+    .option("--verbose", "Show every sync-health table")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: { limit?: string; verbose?: boolean; json?: boolean }) => {
       try {
         const { getCloudConfig, getConnectionString, PgAdapterAsync, SqliteAdapter, getDbPath, listSqliteTables, ensureConflictsTable, listConflicts } = await import("@hasna/cloud");
         const config = getCloudConfig();
@@ -53,9 +56,15 @@ export function registerCloudCommands(program: Command): void {
         printInfo(`Mode: ${info.mode}`);
         printInfo(`RDS Host: ${info.rds_host}`);
         if (info.postgresql) printInfo(`PostgreSQL: ${info.postgresql}`);
-        for (const s of (info.sync_health as typeof syncHealth)) {
+        const syncRows = info.sync_health as typeof syncHealth;
+        const explicitLimit = parsePositiveIntegerOption(opts.limit, "--limit");
+        const limited = limitItems(syncRows, opts.verbose ? syncRows.length || 1 : explicitLimit ?? DEFAULT_LIST_LIMIT);
+        for (const s of limited.items) {
           const pct = s.total > 0 ? Math.round(((s.total - s.unsynced) / s.total) * 100) : 100;
-          printInfo(`  ${s.table}: ${pct}% synced (${s.unsynced} unsynced / ${s.total} total)`);
+          printInfo(`  ${truncateText(s.table, opts.verbose ? 80 : 36)}: ${pct}% synced (${s.unsynced} unsynced / ${s.total} total)`);
+        }
+        if (!opts.verbose && limited.hidden > 0) {
+          printHint(`Showing ${limited.shown} of ${limited.total} sync-health rows. Use --verbose or --limit ${limited.total} to show all.`);
         }
         if (info.conflicts_unresolved) printInfo(`Conflicts: ${info.conflicts_unresolved} unresolved`);
       } catch (e) {
